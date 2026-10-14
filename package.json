@@ -1,0 +1,39 @@
+{
+  "name": "bubbleworks-laundry-management",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @bubbleworks/web",
+    "build": "npm run build -w @bubbleworks/web",
+    "preview": "npm run preview -w @bubbleworks/web",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "dotenv": "^17.2.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.32.0",
+    "@types/node": "^22.16.5",
+    "autoprefixer": "^10.4.21",
+    "eslint": "^9.32.0",
+    "globals": "^15.15.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.8.3"
+  },
+  "keywords": [
+    "pos",
+    "laundry",
+    "billing",
+    "firebase",
+    "react",
+    "vite"
+  ],
+  "author": "",
+  "license": "ISC"
+}
