@@ -265,51 +265,51 @@ async function resolveFirebaseUserProfile(
   };
 }
 
-export async function fbLogin(input: { username: string; password: string }): Promise<ApiSession> {
-  const trimmed = input.username.trim();
-  if (!trimmed || !input.password) {
-    throw new Error("Please enter your email and password.");
-  }
-
-  const isEmail = trimmed.includes("@");
-  const emailToUse = isEmail ? trimmed.toLowerCase() : `${trimmed.toLowerCase()}@bubbleworks.com`;
-
-  // 1. Attempt Real Firebase Authentication (Email/Password)
+async function attemptFirestoreUserLogin(usernameOrEmail: string, password: string): Promise<ApiSession | null> {
   try {
-    const cred = await signInWithEmailAndPassword(auth, emailToUse, input.password);
-    const token = await cred.user.getIdToken();
-    const session = await resolveFirebaseUserProfile(cred.user, token);
-    ensureFirebaseSeeded().catch(() => {});
-    return session;
-  } catch (authErr: any) {
-    const errCode = authErr?.code || "";
+    const usersRef = collection(db, "users");
+    const term = usernameOrEmail.trim();
 
-    if (errCode === "auth/wrong-password" || errCode === "auth/invalid-credential") {
-      throw new Error("Invalid email or password.");
-    }
-    if (errCode === "auth/user-disabled") {
-      throw new Error("This account has been disabled in Firebase Authentication.");
-    }
-    if (errCode === "auth/too-many-requests") {
-      throw new Error("Access temporarily locked due to multiple failed login attempts. Try again later.");
-    }
-  }
+    // 1. Check by exact username
+    let snap = await getDocs(query(usersRef, where("username", "==", term)));
 
-  // 3. Query Firestore users collection (for cashiers)
-  try {
-    const q = query(collection(db, "users"), where("username", "==", trimmed));
-    const snap = await getDocs(q);
+    // 2. Check by lowercase username
+    if (snap.empty) {
+      snap = await getDocs(query(usersRef, where("username", "==", term.toLowerCase())));
+    }
+
+    // 3. Check by email
+    if (snap.empty && term.includes("@")) {
+      snap = await getDocs(query(usersRef, where("email", "==", term.toLowerCase())));
+    }
+
+    // 4. Fallback search among all users for case-insensitive username match
+    if (snap.empty) {
+      const allUsersSnap = await getDocs(usersRef);
+      const matched = allUsersSnap.docs.find((d: any) => {
+        const u = d.data();
+        return (
+          (u.username && u.username.toLowerCase() === term.toLowerCase()) ||
+          (u.email && u.email.toLowerCase() === term.toLowerCase())
+        );
+      });
+      if (matched) {
+        snap = { docs: [matched], empty: false } as any;
+      }
+    }
 
     if (!snap.empty) {
       const userDoc = snap.docs[0].data();
+
       if (userDoc.status === "DISABLED") {
-        throw new Error("User account is disabled. Contact system administrator.");
-      }
-      if (userDoc.password && userDoc.password !== input.password) {
-        throw new Error("Invalid username or password");
+        throw new Error("Your cashier account is disabled. Please contact your manager.");
       }
 
-      let branch = null;
+      if (userDoc.password && userDoc.password !== password) {
+        throw new Error("Invalid password.");
+      }
+
+      let branch = { id: DEFAULT_BRANCH.id, name: DEFAULT_BRANCH.name, code: DEFAULT_BRANCH.code };
       if (userDoc.branchId) {
         try {
           const bSnap = await getDoc(doc(db, "branches", userDoc.branchId));
@@ -322,24 +322,83 @@ export async function fbLogin(input: { username: string; password: string }): Pr
         }
       }
 
+      // Update last login
+      try {
+        await updateDoc(doc(db, "users", snap.docs[0].id), {
+          lastLoginAt: new Date().toISOString(),
+        });
+      } catch {
+        // Ignore
+      }
+
       return {
-        token: `fb_token_${userDoc.id}_${Date.now()}`,
+        token: `fb_token_${userDoc.id || snap.docs[0].id}_${Date.now()}`,
         user: {
-          id: userDoc.id,
+          id: userDoc.id || snap.docs[0].id,
           name: userDoc.name || userDoc.username,
           username: userDoc.username,
-          role: userDoc.role || "CASHIER",
+          role: (userDoc.role as "ADMIN" | "CASHIER") || "CASHIER",
           branchId: userDoc.branchId || null,
           branch,
         },
       };
     }
   } catch (err: any) {
-    if (err.message && err.message.includes("User account is disabled")) throw err;
-    if (err.message && err.message.includes("Invalid username or password")) throw err;
+    if (err.message && (err.message.includes("disabled") || err.message.includes("Invalid password"))) {
+      throw err;
+    }
   }
 
-  throw new Error("Invalid username or password. Please check your credentials.");
+  return null;
+}
+
+export async function fbLogin(input: { username: string; password: string }): Promise<ApiSession> {
+  const trimmed = input.username.trim();
+  if (!trimmed || !input.password) {
+    throw new Error("Please enter your username/email and password.");
+  }
+
+  const isEmail = trimmed.includes("@");
+
+  // 1. If username was entered (no @), check Firestore cashiers directly
+  if (!isEmail) {
+    const cashierSession = await attemptFirestoreUserLogin(trimmed, input.password);
+    if (cashierSession) {
+      ensureFirebaseSeeded().catch(() => {});
+      return cashierSession;
+    }
+  }
+
+  // 2. Attempt Real Firebase Authentication
+  let authError: any = null;
+  try {
+    const emailToUse = isEmail ? trimmed.toLowerCase() : `${trimmed.toLowerCase()}@bubbleworks.com`;
+    const cred = await signInWithEmailAndPassword(auth, emailToUse, input.password);
+    const token = await cred.user.getIdToken();
+    const session = await resolveFirebaseUserProfile(cred.user, token);
+    ensureFirebaseSeeded().catch(() => {});
+    return session;
+  } catch (err: any) {
+    authError = err;
+  }
+
+  // 3. If Firebase Auth didn't find the user, also check Firestore users by email
+  if (isEmail) {
+    const userSession = await attemptFirestoreUserLogin(trimmed, input.password);
+    if (userSession) {
+      ensureFirebaseSeeded().catch(() => {});
+      return userSession;
+    }
+  }
+
+  if (authError?.code === "auth/user-disabled") {
+    throw new Error("This account has been disabled in Firebase Authentication.");
+  }
+  if (authError?.code === "auth/too-many-requests") {
+    throw new Error("Access temporarily locked due to multiple failed login attempts. Try again later.");
+  }
+
+  throw new Error("Invalid username/email or password.");
 }
 
 export async function fbLoginWithGoogle(): Promise<ApiSession> {
