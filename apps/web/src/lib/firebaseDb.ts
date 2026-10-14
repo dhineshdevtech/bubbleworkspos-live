@@ -529,21 +529,7 @@ export async function fbGetUsers(): Promise<{ users: User[] }> {
     });
     return { users };
   } catch {
-    return {
-      users: [
-        {
-          id: "user-admin",
-          name: "Admin User",
-          mobile: "9876543210",
-          username: "admin",
-          role: "ADMIN",
-          status: "ACTIVE",
-          branchId: DEFAULT_BRANCH_ID,
-          lastLoginAt: new Date().toISOString(),
-          createdAt: new Date().toISOString(),
-        },
-      ],
-    };
+    return { users: [] };
   }
 }
 
@@ -554,11 +540,24 @@ export async function fbCreateCashier(input: {
   password?: string;
   branchId: string;
 }): Promise<{ user: User }> {
+  const cleanUsername = input.username.trim();
+
+  // Check if username already exists in Firestore
+  try {
+    const q = query(collection(db, "users"), where("username", "==", cleanUsername));
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      throw new Error(`Username "${cleanUsername}" is already taken. Please choose another username.`);
+    }
+  } catch (err: any) {
+    if (err.message && err.message.includes("already taken")) throw err;
+  }
+
   const user: User = {
-    id: generateId("user"),
-    name: input.name,
-    mobile: input.mobile,
-    username: input.username,
+    id: generateId("cashier"),
+    name: input.name.trim(),
+    mobile: input.mobile.trim(),
+    username: cleanUsername,
     role: "CASHIER",
     status: "ACTIVE",
     branchId: input.branchId,

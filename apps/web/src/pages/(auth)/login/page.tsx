@@ -12,7 +12,6 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
-  const [regRole, setRegRole] = useState<"CASHIER" | "ADMIN">("CASHIER");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
@@ -47,14 +46,10 @@ export default function LoginPage() {
           email: username,
           password,
           name: fullName || undefined,
-          role: regRole,
+          role: "ADMIN",
         });
         saveSession(session);
-        if (session.user.role === "CASHIER") {
-          navigate("/billing/new");
-        } else {
-          navigate("/dashboard");
-        }
+        navigate("/dashboard");
       }
     } catch (err: any) {
       setError(err?.message || "Invalid credentials. Please verify and try again.");
@@ -127,54 +122,22 @@ export default function LoginPage() {
           {/* Form */}
           <form onSubmit={onSubmit} className="space-y-4">
             {mode === "register" && (
-              <>
-                <div>
-                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-muted">
-                    Full Name
-                  </label>
-                  <div className="relative">
-                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-muted">
-                      <UserIcon className="h-4 w-4" />
-                    </span>
-                    <input
-                      value={fullName}
-                      onChange={(e) => setFullName(e.target.value)}
-                      placeholder="e.g. John Doe"
-                      className="focus-ring h-11 w-full rounded-lg border border-line bg-white pl-10 pr-3 text-sm transition-colors hover:border-[#087f8c]/40"
-                    />
-                  </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-muted">
+                  Full Name
+                </label>
+                <div className="relative">
+                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-muted">
+                    <UserIcon className="h-4 w-4" />
+                  </span>
+                  <input
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                    placeholder="e.g. John Doe"
+                    className="focus-ring h-11 w-full rounded-lg border border-line bg-white pl-10 pr-3 text-sm transition-colors hover:border-[#087f8c]/40"
+                  />
                 </div>
-
-                <div>
-                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-muted">
-                    Role / Account Type
-                  </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setRegRole("CASHIER")}
-                      className={`flex items-center justify-center rounded-lg border py-2.5 text-xs font-semibold transition ${
-                        regRole === "CASHIER"
-                          ? "border-brand bg-[#e6f4f5] text-brand shadow-sm"
-                          : "border-line bg-white text-muted hover:border-gray-300"
-                      }`}
-                    >
-                      Cashier (POS &amp; Orders)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRegRole("ADMIN")}
-                      className={`flex items-center justify-center rounded-lg border py-2.5 text-xs font-semibold transition ${
-                        regRole === "ADMIN"
-                          ? "border-brand bg-[#e6f4f5] text-brand shadow-sm"
-                          : "border-line bg-white text-muted hover:border-gray-300"
-                      }`}
-                    >
-                      Administrator
-                    </button>
-                  </div>
-                </div>
-              </>
+              </div>
             )}
 
             <div>
