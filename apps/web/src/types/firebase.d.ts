@@ -26,4 +26,15 @@ declare module "firebase/firestore" {
 
 declare module "firebase/auth" {
   export function getAuth(app?: any): any;
+  export function signInWithEmailAndPassword(auth: any, email: string, password: string): Promise<any>;
+  export function createUserWithEmailAndPassword(auth: any, email: string, password: string): Promise<any>;
+  export function signInWithPopup(auth: any, provider: any): Promise<any>;
+  export class GoogleAuthProvider {
+    constructor();
+    setCustomParameters(params: any): void;
+  }
+  export function signOut(auth: any): Promise<void>;
+  export function onAuthStateChanged(auth: any, callback: (user: any) => void): () => void;
+  export function updateProfile(user: any, profile: { displayName?: string; photoURL?: string }): Promise<void>;
+  export function sendPasswordResetEmail(auth: any, email: string): Promise<void>;
 }

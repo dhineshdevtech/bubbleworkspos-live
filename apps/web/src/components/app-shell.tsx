@@ -30,7 +30,8 @@ import {
   getOrderNumberPreview,
   getOrders,
   getCustomers,
-  getReports
+  getReports,
+  logout
 } from "@/lib/api";
 import { clearSession, loadSession } from "@/lib/session";
 import { prefetchRouteChunk } from "@/lib/route-loaders";
@@ -124,7 +125,12 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
     }
   }, [isLoaded, session, navigate]);
 
-  const onLogout = () => {
+  const onLogout = async () => {
+    try {
+      await logout();
+    } catch (err) {
+      console.warn("Sign out notice:", err);
+    }
     clearSession();
     navigate("/login");
   };

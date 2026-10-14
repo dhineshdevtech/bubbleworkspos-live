@@ -12,7 +12,14 @@ import {
   limit,
   Timestamp,
 } from "firebase/firestore";
-import { db } from "./firebase";
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+  signOut,
+} from "firebase/auth";
+import { db, auth } from "./firebase";
 import type {
   ApiSession,
   Branch,
@@ -166,39 +173,147 @@ export function generateId(prefix = "id"): string {
 }
 
 // =========================================================================
-// 1. Authentication
+// 1. Authentication (Real Firebase Auth + Firestore User Profiles)
 // =========================================================================
+
+async function resolveFirebaseUserProfile(
+  fbUser: any,
+  token: string,
+  defaultRole: "ADMIN" | "CASHIER" = "ADMIN",
+  overrideName?: string
+): Promise<ApiSession> {
+  const uid = fbUser.uid;
+  const email = (fbUser.email || "").toLowerCase();
+  const displayName = overrideName || fbUser.displayName || (email ? email.split("@")[0] : "Admin User");
+
+  const userDocRef = doc(db, "users", uid);
+  let userSnap = await getDoc(userDocRef);
+
+  let userData: any = null;
+
+  if (userSnap.exists()) {
+    userData = userSnap.data();
+  } else {
+    // Check if an existing profile exists with this email or username
+    if (email) {
+      try {
+        const q = query(collection(db, "users"), where("email", "==", email));
+        const qSnap = await getDocs(q);
+        if (!qSnap.empty) {
+          userData = qSnap.docs[0].data();
+          await setDoc(userDocRef, { ...userData, id: uid, uid }, { merge: true });
+        }
+      } catch (err) {
+        console.warn("Querying existing user profile notice:", err);
+      }
+    }
+
+    if (!userData) {
+      userData = {
+        id: uid,
+        uid: uid,
+        name: displayName,
+        username: email || displayName,
+        email: email,
+        role: defaultRole,
+        branchId: DEFAULT_BRANCH_ID,
+        status: "ACTIVE",
+        avatarUrl: fbUser.photoURL || null,
+        lastLoginAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      try {
+        await setDoc(userDocRef, userData);
+      } catch (err) {
+        console.warn("Saving initial user profile notice:", err);
+      }
+    }
+  }
+
+  if (userData.status === "DISABLED") {
+    throw new Error("Your user account has been deactivated. Please contact your manager.");
+  }
+
+  // Update last login timestamp
+  try {
+    await updateDoc(userDocRef, { lastLoginAt: new Date().toISOString() });
+  } catch {
+    // Non-blocking
+  }
+
+  let branch = null;
+  const branchId = userData.branchId || DEFAULT_BRANCH_ID;
+  try {
+    const bSnap = await getDoc(doc(db, "branches", branchId));
+    if (bSnap.exists()) {
+      const bData = bSnap.data();
+      branch = { id: branchId, name: bData.name, code: bData.code };
+    } else {
+      branch = { id: DEFAULT_BRANCH.id, name: DEFAULT_BRANCH.name, code: DEFAULT_BRANCH.code };
+    }
+  } catch {
+    branch = { id: DEFAULT_BRANCH.id, name: DEFAULT_BRANCH.name, code: DEFAULT_BRANCH.code };
+  }
+
+  return {
+    token: token || `fb_token_${uid}`,
+    user: {
+      id: uid,
+      name: userData.name || displayName,
+      username: userData.username || email || displayName,
+      role: (userData.role as "ADMIN" | "CASHIER") || "ADMIN",
+      branchId: branchId,
+      branch,
+    },
+  };
+}
 
 export async function fbLogin(input: { username: string; password: string }): Promise<ApiSession> {
   await ensureFirebaseSeeded();
 
-  const trimmedUsername = input.username.trim().toLowerCase();
-  
-  // 1. Check default hardcoded superadmin fallback for offline/instant access
-  if (
-    (trimmedUsername === "admin" && input.password === "Admin1234") ||
-    (trimmedUsername === "superadmin" && input.password === "Admin1234")
-  ) {
-    return {
-      token: "fb_token_admin_" + Date.now(),
-      user: {
-        id: "user-admin",
-        name: "Super Admin",
-        username: "admin",
-        role: "ADMIN",
-        branchId: DEFAULT_BRANCH_ID,
-        branch: {
-          id: DEFAULT_BRANCH_ID,
-          name: DEFAULT_BRANCH.name,
-          code: DEFAULT_BRANCH.code,
-        },
-      },
-    };
+  const trimmed = input.username.trim();
+  const isEmail = trimmed.includes("@");
+  const emailToUse = isEmail ? trimmed.toLowerCase() : `${trimmed.toLowerCase()}@bubbleworks.com`;
+
+  // 1. Attempt Real Firebase Authentication (Email/Password)
+  try {
+    const cred = await signInWithEmailAndPassword(auth, emailToUse, input.password);
+    const token = await cred.user.getIdToken();
+    return await resolveFirebaseUserProfile(cred.user, token);
+  } catch (authErr: any) {
+    const errCode = authErr?.code || "";
+
+    // If the account does not exist in Firebase Auth yet, and it is the admin credentials,
+    // automatically provision the admin user in Firebase Auth!
+    if (
+      (errCode === "auth/user-not-found" || errCode === "auth/invalid-credential") &&
+      (trimmed.toLowerCase() === "admin" || emailToUse === "admin@bubbleworks.com") &&
+      input.password === "Admin1234"
+    ) {
+      try {
+        const newCred = await createUserWithEmailAndPassword(auth, "admin@bubbleworks.com", "Admin1234");
+        const token = await newCred.user.getIdToken();
+        return await resolveFirebaseUserProfile(newCred.user, token, "ADMIN", "Super Admin");
+      } catch (provisionErr: any) {
+        console.warn("Auto-provision Firebase Auth admin note:", provisionErr?.code);
+      }
+    }
+
+    if (errCode === "auth/wrong-password") {
+      throw new Error("Invalid password. Please check your credentials.");
+    }
+    if (errCode === "auth/user-disabled") {
+      throw new Error("This account has been disabled in Firebase Authentication.");
+    }
+    if (errCode === "auth/too-many-requests") {
+      throw new Error("Access temporarily locked due to multiple failed login attempts. Try again later.");
+    }
   }
 
-  // 2. Query Firestore users collection
+  // 2. Query Firestore users collection (for cashiers created in POS or custom staff)
   try {
-    const q = query(collection(db, "users"), where("username", "==", input.username.trim()));
+    const q = query(collection(db, "users"), where("username", "==", trimmed));
     const snap = await getDocs(q);
 
     if (!snap.empty) {
@@ -233,9 +348,95 @@ export async function fbLogin(input: { username: string; password: string }): Pr
     }
   } catch (err: any) {
     if (err.message && err.message.includes("User account is disabled")) throw err;
+    if (err.message && err.message.includes("Invalid username or password")) throw err;
   }
 
-  throw new Error("Invalid username or password");
+  // 3. Superadmin fallback for offline/instant admin access
+  if (
+    (trimmed.toLowerCase() === "admin" && input.password === "Admin1234") ||
+    (trimmed.toLowerCase() === "admin@bubbleworks.com" && input.password === "Admin1234")
+  ) {
+    return {
+      token: "fb_token_admin_" + Date.now(),
+      user: {
+        id: "user-admin",
+        name: "Super Admin",
+        username: "admin@bubbleworks.com",
+        role: "ADMIN",
+        branchId: DEFAULT_BRANCH_ID,
+        branch: {
+          id: DEFAULT_BRANCH_ID,
+          name: DEFAULT_BRANCH.name,
+          code: DEFAULT_BRANCH.code,
+        },
+      },
+    };
+  }
+
+  throw new Error("Invalid username or password. Please check your credentials.");
+}
+
+export async function fbLoginWithGoogle(): Promise<ApiSession> {
+  await ensureFirebaseSeeded();
+  try {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+    const cred = await signInWithPopup(auth, provider);
+    const token = await cred.user.getIdToken();
+    return await resolveFirebaseUserProfile(cred.user, token, "ADMIN");
+  } catch (err: any) {
+    console.error("Firebase Google Auth error:", err);
+    if (err.code === "auth/popup-closed-by-user") {
+      throw new Error("Google sign-in was cancelled.");
+    }
+    if (err.code === "auth/popup-blocked") {
+      throw new Error("Sign-in popup was blocked by browser. Please allow popups for this site.");
+    }
+    if (err.code === "auth/operation-not-allowed") {
+      throw new Error("Google Sign-In is not enabled yet in your Firebase Console. Please enable Google in Firebase Authentication -> Sign-in method.");
+    }
+    if (err.code === "auth/unauthorized-domain") {
+      throw new Error("This domain is not authorized in Firebase. Please add your Vercel domain to Firebase Console -> Authentication -> Settings -> Authorized domains.");
+    }
+    throw new Error(err.message || "Failed to sign in with Google.");
+  }
+}
+
+export async function fbRegister(input: {
+  email: string;
+  password: string;
+  name?: string;
+  role?: "ADMIN" | "CASHIER";
+}): Promise<ApiSession> {
+  await ensureFirebaseSeeded();
+  try {
+    const cred = await createUserWithEmailAndPassword(auth, input.email.trim(), input.password);
+    const token = await cred.user.getIdToken();
+    return await resolveFirebaseUserProfile(cred.user, token, input.role || "ADMIN", input.name);
+  } catch (err: any) {
+    console.error("Firebase Auth register error:", err);
+    if (err.code === "auth/email-already-in-use") {
+      throw new Error("An account already exists with this email address. Please sign in instead.");
+    }
+    if (err.code === "auth/weak-password") {
+      throw new Error("Password must be at least 6 characters long.");
+    }
+    if (err.code === "auth/invalid-email") {
+      throw new Error("Please enter a valid email address.");
+    }
+    if (err.code === "auth/operation-not-allowed") {
+      throw new Error("Email/Password registration is not enabled in Firebase Console. Please enable Email/Password in Authentication -> Sign-in method.");
+    }
+    throw new Error(err.message || "Failed to create account.");
+  }
+}
+
+export async function fbSignOut(): Promise<void> {
+  try {
+    await signOut(auth);
+  } catch (err) {
+    console.warn("Firebase signOut notice:", err);
+  }
 }
 
 // =========================================================================

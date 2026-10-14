@@ -1,6 +1,9 @@
 import type { CreateOrderInput } from "@bubbleworks/shared";
 import {
   fbLogin,
+  fbLoginWithGoogle,
+  fbRegister,
+  fbSignOut,
   fbGetBranches,
   fbCreateBranch,
   fbUpdateBranch,
@@ -240,6 +243,23 @@ export type { CreateOrderInput } from "@bubbleworks/shared";
 // 1. Auth
 export async function login(input: { username: string; password: string }): Promise<ApiSession> {
   return fbLogin(input);
+}
+
+export async function loginWithGoogle(): Promise<ApiSession> {
+  return fbLoginWithGoogle();
+}
+
+export async function register(input: {
+  email: string;
+  password: string;
+  name?: string;
+  role?: "ADMIN" | "CASHIER";
+}): Promise<ApiSession> {
+  return fbRegister(input);
+}
+
+export async function logout(): Promise<void> {
+  return fbSignOut();
 }
 
 // 2. Branches
