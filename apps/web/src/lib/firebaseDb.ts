@@ -146,19 +146,7 @@ export async function ensureFirebaseSeeded(): Promise<void> {
         await setDoc(doc(db, "addons", addon.id), addon);
       }
 
-      // Seed default admin user
-      await setDoc(doc(db, "users", "user-admin"), {
-        id: "user-admin",
-        name: "Admin User",
-        mobile: "9876543210",
-        username: "admin",
-        password: "Admin1234",
-        role: "ADMIN",
-        status: "ACTIVE",
-        branchId: DEFAULT_BRANCH_ID,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+      // Initial seed complete
     } catch (err) {
       console.warn("Firestore seed check notice:", err);
     }
@@ -176,8 +164,6 @@ export function generateId(prefix = "id"): string {
 // 1. Authentication (Real Firebase Auth + Firestore User Profiles)
 // =========================================================================
 
-const ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL || "").trim().toLowerCase();
-const ADMIN_PASSWORD = (import.meta.env.VITE_ADMIN_PASSWORD || "").trim();
 
 async function resolveFirebaseUserProfile(
   fbUser: any,
@@ -281,8 +267,12 @@ async function resolveFirebaseUserProfile(
 
 export async function fbLogin(input: { username: string; password: string }): Promise<ApiSession> {
   const trimmed = input.username.trim();
+  if (!trimmed || !input.password) {
+    throw new Error("Please enter your email and password.");
+  }
+
   const isEmail = trimmed.includes("@");
-  const emailToUse = isEmail ? trimmed.toLowerCase() : (ADMIN_EMAIL || `${trimmed.toLowerCase()}@bubbleworks.com`);
+  const emailToUse = isEmail ? trimmed.toLowerCase() : `${trimmed.toLowerCase()}@bubbleworks.com`;
 
   // 1. Attempt Real Firebase Authentication (Email/Password)
   try {
@@ -294,56 +284,15 @@ export async function fbLogin(input: { username: string; password: string }): Pr
   } catch (authErr: any) {
     const errCode = authErr?.code || "";
 
-    // If account not found in Firebase Auth, and credentials match the .env admin, auto-provision
-    if (
-      ADMIN_EMAIL &&
-      ADMIN_PASSWORD &&
-      (errCode === "auth/user-not-found" || errCode === "auth/invalid-credential") &&
-      (trimmed.toLowerCase() === ADMIN_EMAIL || trimmed.toLowerCase() === "admin") &&
-      input.password === ADMIN_PASSWORD
-    ) {
-      try {
-        const newCred = await createUserWithEmailAndPassword(auth, ADMIN_EMAIL, ADMIN_PASSWORD);
-        const token = await newCred.user.getIdToken();
-        const session = await resolveFirebaseUserProfile(newCred.user, token, "ADMIN", "Admin");
-        ensureFirebaseSeeded().catch(() => {});
-        return session;
-      } catch (provisionErr: any) {
-        console.warn("Auto-provision Firebase Auth admin note:", provisionErr?.code);
-      }
-    }
-
-    if (errCode === "auth/wrong-password") {
-      throw new Error("Invalid password. Please check your credentials.");
+    if (errCode === "auth/wrong-password" || errCode === "auth/invalid-credential") {
+      throw new Error("Invalid email or password.");
     }
     if (errCode === "auth/user-disabled") {
       throw new Error("This account has been disabled in Firebase Authentication.");
     }
-  }
-
-  // 2. Check if credentials match .env Admin Credentials
-  if (
-    ADMIN_EMAIL &&
-    ADMIN_PASSWORD &&
-    (trimmed.toLowerCase() === ADMIN_EMAIL || trimmed.toLowerCase() === "admin") &&
-    input.password === ADMIN_PASSWORD
-  ) {
-    ensureFirebaseSeeded().catch(() => {});
-    return {
-      token: "fb_token_admin_" + Date.now(),
-      user: {
-        id: "user-admin",
-        name: "Admin User",
-        username: ADMIN_EMAIL,
-        role: "ADMIN",
-        branchId: DEFAULT_BRANCH_ID,
-        branch: {
-          id: DEFAULT_BRANCH_ID,
-          name: DEFAULT_BRANCH.name,
-          code: DEFAULT_BRANCH.code,
-        },
-      },
-    };
+    if (errCode === "auth/too-many-requests") {
+      throw new Error("Access temporarily locked due to multiple failed login attempts. Try again later.");
+    }
   }
 
   // 3. Query Firestore users collection (for cashiers)
