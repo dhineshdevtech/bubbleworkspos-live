@@ -1,5 +1,5 @@
 declare module "firebase/app" {
-  export function initializeApp(config: any): any;
+  export function initializeApp(config: any, name?: string): any;
   export function getApps(): any[];
   export function getApp(): any;
 }

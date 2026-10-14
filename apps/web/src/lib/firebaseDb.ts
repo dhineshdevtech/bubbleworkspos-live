@@ -19,7 +19,7 @@ import {
   GoogleAuthProvider,
   signOut,
 } from "firebase/auth";
-import { db, auth } from "./firebase";
+import { db, auth, getSecondaryAuth } from "./firebase";
 import type {
   ApiSession,
   Branch,
@@ -541,8 +541,10 @@ export async function fbCreateCashier(input: {
   branchId: string;
 }): Promise<{ user: User }> {
   const cleanUsername = input.username.trim();
+  const password = input.password || "Cashier1234";
+  const email = cleanUsername.includes("@") ? cleanUsername.toLowerCase() : `${cleanUsername.toLowerCase()}@bubbleworks.com`;
 
-  // Check if username already exists in Firestore
+  // 1. Check if username already exists in Firestore
   try {
     const q = query(collection(db, "users"), where("username", "==", cleanUsername));
     const snap = await getDocs(q);
@@ -553,8 +555,26 @@ export async function fbCreateCashier(input: {
     if (err.message && err.message.includes("already taken")) throw err;
   }
 
+  let uid = generateId("cashier");
+
+  // 2. Create the cashier account in Firebase Authentication using secondaryAuth (preserves admin session!)
+  try {
+    const secAuth = getSecondaryAuth();
+    const cred = await createUserWithEmailAndPassword(secAuth, email, password);
+    uid = cred.user.uid;
+    await signOut(secAuth);
+  } catch (authErr: any) {
+    console.warn("Cashier Firebase Auth creation notice:", authErr?.code, authErr?.message);
+    if (authErr?.code === "auth/email-already-in-use") {
+      throw new Error(`An account with username/email "${cleanUsername}" already exists in Firebase.`);
+    }
+    if (authErr?.code === "auth/weak-password") {
+      throw new Error("Password must be at least 6 characters.");
+    }
+  }
+
   const user: User = {
-    id: generateId("cashier"),
+    id: uid,
     name: input.name.trim(),
     mobile: input.mobile.trim(),
     username: cleanUsername,
@@ -565,9 +585,10 @@ export async function fbCreateCashier(input: {
     createdAt: new Date().toISOString(),
   };
 
-  await setDoc(doc(db, "users", user.id), {
+  await setDoc(doc(db, "users", uid), {
     ...user,
-    password: input.password || "Cashier1234",
+    email,
+    password,
   });
 
   return { user };

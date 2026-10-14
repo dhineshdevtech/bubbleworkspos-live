@@ -16,3 +16,11 @@ export const firebaseConfig = {
 export const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 export const db = getFirestore(app);
 export const auth = getAuth(app);
+
+// Secondary Auth instance used by Admins to provision Cashier accounts in Firebase Auth
+export function getSecondaryAuth() {
+  const secondaryName = "FirebaseSecondaryApp";
+  const existing = getApps().find((a: any) => a.name === secondaryName);
+  const secApp = existing || initializeApp(firebaseConfig, secondaryName);
+  return getAuth(secApp);
+}
