@@ -176,6 +176,9 @@ export function generateId(prefix = "id"): string {
 // 1. Authentication (Real Firebase Auth + Firestore User Profiles)
 // =========================================================================
 
+const ADMIN_EMAIL = (import.meta.env.VITE_ADMIN_EMAIL || "").trim().toLowerCase();
+const ADMIN_PASSWORD = (import.meta.env.VITE_ADMIN_PASSWORD || "").trim();
+
 async function resolveFirebaseUserProfile(
   fbUser: any,
   token: string,
@@ -186,74 +189,81 @@ async function resolveFirebaseUserProfile(
   const email = (fbUser.email || "").toLowerCase();
   const displayName = overrideName || fbUser.displayName || (email ? email.split("@")[0] : "Admin User");
 
-  const userDocRef = doc(db, "users", uid);
-  let userSnap = await getDoc(userDocRef);
-
   let userData: any = null;
 
-  if (userSnap.exists()) {
-    userData = userSnap.data();
-  } else {
-    // Check if an existing profile exists with this email or username
-    if (email) {
-      try {
-        const q = query(collection(db, "users"), where("email", "==", email));
-        const qSnap = await getDocs(q);
-        if (!qSnap.empty) {
-          userData = qSnap.docs[0].data();
-          await setDoc(userDocRef, { ...userData, id: uid, uid }, { merge: true });
-        }
-      } catch (err) {
-        console.warn("Querying existing user profile notice:", err);
-      }
-    }
+  // Safely query user profile from Firestore without failing if permissions are strict
+  try {
+    const userDocRef = doc(db, "users", uid);
+    const userSnap = await getDoc(userDocRef);
 
-    if (!userData) {
-      userData = {
-        id: uid,
-        uid: uid,
-        name: displayName,
-        username: email || displayName,
-        email: email,
-        role: defaultRole,
-        branchId: DEFAULT_BRANCH_ID,
-        status: "ACTIVE",
-        avatarUrl: fbUser.photoURL || null,
-        lastLoginAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      try {
-        await setDoc(userDocRef, userData);
-      } catch (err) {
-        console.warn("Saving initial user profile notice:", err);
+    if (userSnap.exists()) {
+      userData = userSnap.data();
+    } else {
+      if (email) {
+        try {
+          const q = query(collection(db, "users"), where("email", "==", email));
+          const qSnap = await getDocs(q);
+          if (!qSnap.empty) {
+            userData = qSnap.docs[0].data();
+            await setDoc(userDocRef, { ...userData, id: uid, uid }, { merge: true });
+          }
+        } catch {
+          // Ignore
+        }
+      }
+
+      if (!userData) {
+        userData = {
+          id: uid,
+          uid: uid,
+          name: displayName,
+          username: email || displayName,
+          email: email,
+          role: defaultRole,
+          branchId: DEFAULT_BRANCH_ID,
+          status: "ACTIVE",
+          avatarUrl: fbUser.photoURL || null,
+          lastLoginAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        try {
+          await setDoc(userDocRef, userData);
+        } catch {
+          // Ignore permission restriction
+        }
       }
     }
+  } catch (err) {
+    console.warn("Firestore user sync notice (using auth profile directly):", err);
+  }
+
+  // Safe fallback if Firestore profile could not be read
+  if (!userData) {
+    userData = {
+      id: uid,
+      name: displayName,
+      username: email || displayName,
+      role: defaultRole,
+      branchId: DEFAULT_BRANCH_ID,
+      status: "ACTIVE",
+    };
   }
 
   if (userData.status === "DISABLED") {
     throw new Error("Your user account has been deactivated. Please contact your manager.");
   }
 
-  // Update last login timestamp
-  try {
-    await updateDoc(userDocRef, { lastLoginAt: new Date().toISOString() });
-  } catch {
-    // Non-blocking
-  }
-
-  let branch = null;
+  let branch = { id: DEFAULT_BRANCH.id, name: DEFAULT_BRANCH.name, code: DEFAULT_BRANCH.code };
   const branchId = userData.branchId || DEFAULT_BRANCH_ID;
   try {
     const bSnap = await getDoc(doc(db, "branches", branchId));
     if (bSnap.exists()) {
       const bData = bSnap.data();
       branch = { id: branchId, name: bData.name, code: bData.code };
-    } else {
-      branch = { id: DEFAULT_BRANCH.id, name: DEFAULT_BRANCH.name, code: DEFAULT_BRANCH.code };
     }
   } catch {
-    branch = { id: DEFAULT_BRANCH.id, name: DEFAULT_BRANCH.name, code: DEFAULT_BRANCH.code };
+    // Keep default branch
   }
 
   return {
@@ -270,31 +280,34 @@ async function resolveFirebaseUserProfile(
 }
 
 export async function fbLogin(input: { username: string; password: string }): Promise<ApiSession> {
-  await ensureFirebaseSeeded();
-
   const trimmed = input.username.trim();
   const isEmail = trimmed.includes("@");
-  const emailToUse = isEmail ? trimmed.toLowerCase() : `${trimmed.toLowerCase()}@bubbleworks.com`;
+  const emailToUse = isEmail ? trimmed.toLowerCase() : (ADMIN_EMAIL || `${trimmed.toLowerCase()}@bubbleworks.com`);
 
   // 1. Attempt Real Firebase Authentication (Email/Password)
   try {
     const cred = await signInWithEmailAndPassword(auth, emailToUse, input.password);
     const token = await cred.user.getIdToken();
-    return await resolveFirebaseUserProfile(cred.user, token);
+    const session = await resolveFirebaseUserProfile(cred.user, token);
+    ensureFirebaseSeeded().catch(() => {});
+    return session;
   } catch (authErr: any) {
     const errCode = authErr?.code || "";
 
-    // If the account does not exist in Firebase Auth yet, and it is the admin credentials,
-    // automatically provision the admin user in Firebase Auth!
+    // If account not found in Firebase Auth, and credentials match the .env admin, auto-provision
     if (
+      ADMIN_EMAIL &&
+      ADMIN_PASSWORD &&
       (errCode === "auth/user-not-found" || errCode === "auth/invalid-credential") &&
-      (trimmed.toLowerCase() === "admin" || emailToUse === "admin@bubbleworks.com") &&
-      input.password === "Admin1234"
+      (trimmed.toLowerCase() === ADMIN_EMAIL || trimmed.toLowerCase() === "admin") &&
+      input.password === ADMIN_PASSWORD
     ) {
       try {
-        const newCred = await createUserWithEmailAndPassword(auth, "admin@bubbleworks.com", "Admin1234");
+        const newCred = await createUserWithEmailAndPassword(auth, ADMIN_EMAIL, ADMIN_PASSWORD);
         const token = await newCred.user.getIdToken();
-        return await resolveFirebaseUserProfile(newCred.user, token, "ADMIN", "Super Admin");
+        const session = await resolveFirebaseUserProfile(newCred.user, token, "ADMIN", "Admin");
+        ensureFirebaseSeeded().catch(() => {});
+        return session;
       } catch (provisionErr: any) {
         console.warn("Auto-provision Firebase Auth admin note:", provisionErr?.code);
       }
@@ -306,12 +319,34 @@ export async function fbLogin(input: { username: string; password: string }): Pr
     if (errCode === "auth/user-disabled") {
       throw new Error("This account has been disabled in Firebase Authentication.");
     }
-    if (errCode === "auth/too-many-requests") {
-      throw new Error("Access temporarily locked due to multiple failed login attempts. Try again later.");
-    }
   }
 
-  // 2. Query Firestore users collection (for cashiers created in POS or custom staff)
+  // 2. Check if credentials match .env Admin Credentials
+  if (
+    ADMIN_EMAIL &&
+    ADMIN_PASSWORD &&
+    (trimmed.toLowerCase() === ADMIN_EMAIL || trimmed.toLowerCase() === "admin") &&
+    input.password === ADMIN_PASSWORD
+  ) {
+    ensureFirebaseSeeded().catch(() => {});
+    return {
+      token: "fb_token_admin_" + Date.now(),
+      user: {
+        id: "user-admin",
+        name: "Admin User",
+        username: ADMIN_EMAIL,
+        role: "ADMIN",
+        branchId: DEFAULT_BRANCH_ID,
+        branch: {
+          id: DEFAULT_BRANCH_ID,
+          name: DEFAULT_BRANCH.name,
+          code: DEFAULT_BRANCH.code,
+        },
+      },
+    };
+  }
+
+  // 3. Query Firestore users collection (for cashiers)
   try {
     const q = query(collection(db, "users"), where("username", "==", trimmed));
     const snap = await getDocs(q);
@@ -327,10 +362,14 @@ export async function fbLogin(input: { username: string; password: string }): Pr
 
       let branch = null;
       if (userDoc.branchId) {
-        const bSnap = await getDoc(doc(db, "branches", userDoc.branchId));
-        if (bSnap.exists()) {
-          const bData = bSnap.data();
-          branch = { id: userDoc.branchId, name: bData.name, code: bData.code };
+        try {
+          const bSnap = await getDoc(doc(db, "branches", userDoc.branchId));
+          if (bSnap.exists()) {
+            const bData = bSnap.data();
+            branch = { id: userDoc.branchId, name: bData.name, code: bData.code };
+          }
+        } catch {
+          // Ignore
         }
       }
 
@@ -351,39 +390,18 @@ export async function fbLogin(input: { username: string; password: string }): Pr
     if (err.message && err.message.includes("Invalid username or password")) throw err;
   }
 
-  // 3. Superadmin fallback for offline/instant admin access
-  if (
-    (trimmed.toLowerCase() === "admin" && input.password === "Admin1234") ||
-    (trimmed.toLowerCase() === "admin@bubbleworks.com" && input.password === "Admin1234")
-  ) {
-    return {
-      token: "fb_token_admin_" + Date.now(),
-      user: {
-        id: "user-admin",
-        name: "Super Admin",
-        username: "admin@bubbleworks.com",
-        role: "ADMIN",
-        branchId: DEFAULT_BRANCH_ID,
-        branch: {
-          id: DEFAULT_BRANCH_ID,
-          name: DEFAULT_BRANCH.name,
-          code: DEFAULT_BRANCH.code,
-        },
-      },
-    };
-  }
-
   throw new Error("Invalid username or password. Please check your credentials.");
 }
 
 export async function fbLoginWithGoogle(): Promise<ApiSession> {
-  await ensureFirebaseSeeded();
   try {
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: "select_account" });
     const cred = await signInWithPopup(auth, provider);
     const token = await cred.user.getIdToken();
-    return await resolveFirebaseUserProfile(cred.user, token, "ADMIN");
+    const session = await resolveFirebaseUserProfile(cred.user, token, "ADMIN");
+    ensureFirebaseSeeded().catch(() => {});
+    return session;
   } catch (err: any) {
     console.error("Firebase Google Auth error:", err);
     if (err.code === "auth/popup-closed-by-user") {

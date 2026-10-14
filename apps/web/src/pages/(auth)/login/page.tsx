@@ -4,13 +4,13 @@ import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { login, loginWithGoogle, register } from "@/lib/api";
 import { saveSession } from "@/lib/session";
-import { Eye, EyeOff, Loader2, Sparkles, ShieldCheck, Mail, Lock, User as UserIcon } from "lucide-react";
+import { Eye, EyeOff, Loader2, Sparkles, Mail, Lock, User as UserIcon } from "lucide-react";
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const [mode, setMode] = useState<"signin" | "register">("signin");
-  const [username, setUsername] = useState("admin@bubbleworks.com");
-  const [password, setPassword] = useState("Admin1234");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -67,13 +67,6 @@ export default function LoginPage() {
     } finally {
       setGoogleLoading(false);
     }
-  };
-
-  const setDemoCredentials = () => {
-    setUsername("admin@bubbleworks.com");
-    setPassword("Admin1234");
-    setError("");
-    setMode("signin");
   };
 
   return (
@@ -155,7 +148,7 @@ export default function LoginPage() {
                   type={mode === "register" ? "email" : "text"}
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder={mode === "signin" ? "admin@bubbleworks.com" : "admin@domain.com"}
+                  placeholder={mode === "signin" ? "Enter your email or username" : "admin@domain.com"}
                   className="focus-ring h-11 w-full rounded-lg border border-line bg-white pl-10 pr-3 text-sm transition-colors hover:border-[#087f8c]/40"
                   autoComplete={mode === "signin" ? "username" : "email"}
                   required
@@ -182,7 +175,7 @@ export default function LoginPage() {
                   className="focus-ring h-11 w-full rounded-lg border border-line bg-white pl-10 pr-10 text-sm transition-colors hover:border-[#087f8c]/40"
                   type={showPassword ? "text" : "password"}
                   autoComplete={mode === "signin" ? "current-password" : "new-password"}
-                  placeholder="••••••••"
+                  placeholder="Enter your password"
                   required
                 />
                 <button
@@ -210,10 +203,10 @@ export default function LoginPage() {
               {loading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  {mode === "signin" ? "Signing In with Firebase..." : "Creating Account..."}
+                  {mode === "signin" ? "Signing In..." : "Creating Account..."}
                 </>
               ) : (
-                <>{mode === "signin" ? "Sign In with Email" : "Create Account &amp; Sign In"}</>
+                <>{mode === "signin" ? "Sign In" : "Create Account &amp; Sign In"}</>
               )}
             </button>
           </form>
@@ -264,26 +257,6 @@ export default function LoginPage() {
               </>
             )}
           </button>
-
-          {/* Quick Demo Credentials Assistant */}
-          <div className="mt-6 rounded-lg bg-[#f0f9f8] p-3 text-xs text-[#0a6670]">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 font-semibold">
-                <ShieldCheck className="h-4 w-4 text-brand" />
-                Default Admin Credentials
-              </span>
-              <button
-                type="button"
-                onClick={setDemoCredentials}
-                className="rounded bg-brand/10 px-2 py-0.5 font-semibold text-brand transition hover:bg-brand/20"
-              >
-                Auto-fill
-              </button>
-            </div>
-            <div className="mt-1 font-mono text-[11px] text-muted">
-              admin@bubbleworks.com &bull; Admin1234
-            </div>
-          </div>
         </div>
 
         {/* Footer */}
